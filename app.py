@@ -16,13 +16,15 @@ REACTIONS = {
     "tiktok.com": ["heart", "speech_balloon", "repeat", "scissors"]
 }
 
-
 # ----------------------------
 # Slack Events endpoint
 # ----------------------------
 @app.route("/slack/events", methods=["POST"])
 def slack_events():
     data = request.get_json(silent=True)
+
+    # 🔍 DEBUG: see everything Slack sends
+    print("RAW EVENT:", data)
 
     # ----------------------------
     # Slack URL verification handshake
@@ -36,17 +38,19 @@ def slack_events():
     if data and "event" in data:
         event = data["event"]
 
-        # Ignore bot messages (important to prevent loops)
+        print("EVENT OBJECT:", event)
+
+        # Ignore bot messages
         if event.get("bot_id"):
             return Response("", status=200)
 
         text = ""
 
-        # 1. Normal message text
+        # Normal message text
         if event.get("text"):
             text += event["text"].lower()
 
-        # 2. Block-based messages (RSS feeds often use this)
+        # Block-based messages (RSS feeds often use this)
         blocks = event.get("blocks", [])
         for block in blocks:
             if block.get("type") == "rich_text":
@@ -58,11 +62,15 @@ def slack_events():
         channel = event.get("channel")
         ts = event.get("ts")
 
+        print("PARSED TEXT:", text)
+
         # ----------------------------
         # Detect platform + react
         # ----------------------------
         for platform, emojis in REACTIONS.items():
             if platform in text:
+                print(f"MATCH FOUND: {platform}")
+
                 for emoji in emojis:
                     try:
                         client.reactions_add(
@@ -70,8 +78,9 @@ def slack_events():
                             timestamp=ts,
                             name=emoji
                         )
-                    except Exception:
-                        pass
+                        print(f"Added emoji: {emoji}")
+                    except Exception as e:
+                        print("Reaction error:", e)
 
     return Response("", status=200)
 
