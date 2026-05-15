@@ -13,64 +13,40 @@ client = WebClient(token=SLACK_BOT_TOKEN)
 user_scores = {}
 
 # -----------------------------
-# PLATFORM SCORING RULES
+# POINT SYSTEM (reactions)
 # -----------------------------
-PLATFORM_RULES = {
-    "instagram": {
-        "like": 1,
-        "comment": 5,
-        "repost": 4,
-        "share": 3,
-        "remix": 6,
-        "reel": 6
-    },
-    "x": {
-        "like": 1,
-        "comment": 5,
-        "repost": 4
-    },
-    "tiktok": {
-        "like": 1,
-        "comment": 5,
-        "repost": 4,
-        "stitch": 7
-    },
-    "facebook": {
-        "like": 1,
-        "love": 1,
-        "hug": 1,
-        "comment": 5,
-        "share": 4
-    }
+POINT_VALUES = {
+    "heart": 1,
+    "speech_balloon": 5,
+    "repeat": 4
 }
 
 # -----------------------------
-# HELPERS
+# SELF-REPORT SYSTEM
 # -----------------------------
+PLATFORM_RULES = {
+    "instagram": {"like": 1, "comment": 5, "repost": 4, "share": 3, "remix": 6},
+    "x": {"like": 1, "comment": 5, "repost": 4},
+    "tiktok": {"like": 1, "comment": 5, "repost": 4, "stitch": 7},
+    "facebook": {"like": 1, "love": 1, "comment": 5, "share": 4}
+}
+
 def add_score(user_id, points):
     user_scores[user_id] = user_scores.get(user_id, 0) + points
     return user_scores[user_id]
 
 def parse_report(text):
-    """
-    Expected format:
-    platform | action
-    """
     if "|" not in text:
         return None, None
-
-    parts = [p.strip().lower() for p in text.split("|")]
-    if len(parts) != 2:
-        return None, None
-
-    return parts[0], parts[1]
+    p = [x.strip().lower() for x in text.split("|")]
+    return (p[0], p[1]) if len(p) == 2 else (None, None)
 
 # -----------------------------
 # HOME
 # -----------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "Self-Reported Gamification Bot Running"
+    return "EmojiBot running"
 
 # -----------------------------
 # SLACK EVENTS
@@ -88,60 +64,76 @@ def slack_events():
         return Response("", status=200)
 
     event = data["event"]
+    event_type = event.get("type")
 
-    # ignore bot messages
+    # Ignore bot messages
     if event.get("bot_id") or event.get("subtype") == "bot_message":
         return Response("", status=200)
 
-    if event.get("type") != "message":
-        return Response("", status=200)
-
-    user_id = event.get("user")
-    channel = event.get("channel")
-    text = event.get("text", "").strip().lower()
-
     # -----------------------------
-    # SCORE COMMAND
+    # 1. AUTO REACTIONS ON POSTS
     # -----------------------------
-    if text == "score":
-        score = user_scores.get(user_id, 0)
+    if event_type == "message":
+        channel = event.get("channel")
+        ts = event.get("ts")
 
-        client.chat_postMessage(
-            channel=channel,
-            text=f"🏆 Your current score: *{score}* points"
-        )
-        return Response("", status=200)
+        try:
+            client.reactions_add(channel=channel, name="heart", timestamp=ts)
+            client.reactions_add(channel=channel, name="fire", timestamp=ts)
+            client.reactions_add(channel=channel, name="eyes", timestamp=ts)
+        except Exception as e:
+            print("Auto-react error:", e)
 
-    # -----------------------------
-    # SELF-REPORTED ENGAGEMENT
-    # -----------------------------
-    platform, action = parse_report(text)
+        # -------------------------
+        # SCORE COMMAND
+        # -------------------------
+        text = event.get("text", "").strip().lower()
+        user_id = event.get("user")
 
-    if platform in PLATFORM_RULES:
-        rules = PLATFORM_RULES[platform]
+        if text == "score" and user_id:
+            score = user_scores.get(user_id, 0)
+            client.chat_postMessage(
+                channel=channel,
+                text=f"🏆 Your score: *{score}*"
+            )
 
-        if action in rules:
-            points = rules[action]
+        # -------------------------
+        # SELF REPORT LOGGING
+        # -------------------------
+        platform, action = parse_report(text)
+
+        if platform in PLATFORM_RULES and action in PLATFORM_RULES[platform]:
+            points = PLATFORM_RULES[platform][action]
             total = add_score(user_id, points)
 
             client.chat_postMessage(
                 channel=channel,
-                text=(
-                    f"📊 Logged: *{platform} | {action}*\n"
-                    f"+{points} points added\n"
-                    f"🏆 Total score: *{total}*"
+                text=f"📊 {platform} | {action} → +{points} pts (Total: {total})"
+            )
+
+    # -----------------------------
+    # 2. REACTION GAMIFICATION
+    # -----------------------------
+    if event_type == "reaction_added":
+        user_id = event.get("user")
+        reaction = event.get("reaction")
+
+        if reaction in POINT_VALUES:
+            points = POINT_VALUES[reaction]
+            total = add_score(user_id, points)
+
+            try:
+                client.chat_postMessage(
+                    channel=user_id,
+                    text=f"🎮 +{points} for :{reaction}: → Total {total}"
                 )
-            )
-        else:
-            client.chat_postMessage(
-                channel=channel,
-                text=f"⚠️ Unknown action for {platform}. Try: {', '.join(rules.keys())}"
-            )
+            except Exception as e:
+                print("DM error:", e)
 
     return Response("", status=200)
 
 # -----------------------------
-# RUN APP
+# RUN
 # -----------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3000)
