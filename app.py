@@ -4,36 +4,73 @@ import os
 
 app = Flask(__name__)
 
-# Slack token (set in Render environment variables)
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
 client = WebClient(token=SLACK_BOT_TOKEN)
 
 # -----------------------------
-# POINT SYSTEM
+# SCORE STORAGE (MVP)
 # -----------------------------
-POINT_VALUES = {
-    "heart": 1,            # ❤️ like
-    "speech_balloon": 5,   # 💬 comment
-    "repeat": 4            # 🔁 repost
-}
-
-# -----------------------------
-# TEAM SYSTEM (edit this)
-# -----------------------------
-USER_TEAMS = {
-    # "U123456": "Blue",
-    # "U987654": "Gold",
-}
-
-team_scores = {}
 user_scores = {}
+
+# -----------------------------
+# PLATFORM SCORING RULES
+# -----------------------------
+PLATFORM_RULES = {
+    "instagram": {
+        "like": 1,
+        "comment": 5,
+        "repost": 4,
+        "share": 3,
+        "remix": 6,
+        "reel": 6
+    },
+    "x": {
+        "like": 1,
+        "comment": 5,
+        "repost": 4
+    },
+    "tiktok": {
+        "like": 1,
+        "comment": 5,
+        "repost": 4,
+        "stitch": 7
+    },
+    "facebook": {
+        "like": 1,
+        "love": 1,
+        "hug": 1,
+        "comment": 5,
+        "share": 4
+    }
+}
+
+# -----------------------------
+# HELPERS
+# -----------------------------
+def add_score(user_id, points):
+    user_scores[user_id] = user_scores.get(user_id, 0) + points
+    return user_scores[user_id]
+
+def parse_report(text):
+    """
+    Expected format:
+    platform | action
+    """
+    if "|" not in text:
+        return None, None
+
+    parts = [p.strip().lower() for p in text.split("|")]
+    if len(parts) != 2:
+        return None, None
+
+    return parts[0], parts[1]
 
 # -----------------------------
 # HOME
 # -----------------------------
 @app.route("/", methods=["GET"])
 def home():
-    return "EmojiBot is running!"
+    return "Self-Reported Gamification Bot Running"
 
 # -----------------------------
 # SLACK EVENTS
@@ -44,7 +81,6 @@ def slack_events():
 
     print("RAW EVENT:", data)
 
-    # Slack URL verification
     if data and data.get("type") == "url_verification":
         return Response(data["challenge"], mimetype="text/plain")
 
@@ -53,97 +89,54 @@ def slack_events():
 
     event = data["event"]
 
-    # Ignore bot messages
+    # ignore bot messages
     if event.get("bot_id") or event.get("subtype") == "bot_message":
         return Response("", status=200)
 
-    event_type = event.get("type")
+    if event.get("type") != "message":
+        return Response("", status=200)
+
+    user_id = event.get("user")
+    channel = event.get("channel")
+    text = event.get("text", "").strip().lower()
 
     # -----------------------------
-    # 1. AUTO-REACTIONS ON POSTS
+    # SCORE COMMAND
     # -----------------------------
-    if event_type == "message":
-        channel = event.get("channel")
-        ts = event.get("ts")
+    if text == "score":
+        score = user_scores.get(user_id, 0)
 
-        try:
-            # Add auto reactions
-            client.reactions_add(channel=channel, name="fire", timestamp=ts)
-            client.reactions_add(channel=channel, name="heart", timestamp=ts)
-            client.reactions_add(channel=channel, name="eyes", timestamp=ts)
-
-            print("Auto-reactions added")
-
-        except Exception as e:
-            print("Auto-reaction error:", str(e))
+        client.chat_postMessage(
+            channel=channel,
+            text=f"🏆 Your current score: *{score}* points"
+        )
+        return Response("", status=200)
 
     # -----------------------------
-    # 2. REACTION GAMIFICATION
+    # SELF-REPORTED ENGAGEMENT
     # -----------------------------
-    if event_type == "reaction_added":
-        user_id = event.get("user")
-        reaction = event.get("reaction")
+    platform, action = parse_report(text)
 
-        if reaction in POINT_VALUES:
-            points = POINT_VALUES[reaction]
+    if platform in PLATFORM_RULES:
+        rules = PLATFORM_RULES[platform]
 
-            # Update user score
-            user_scores[user_id] = user_scores.get(user_id, 0) + points
-            total = user_scores[user_id]
+        if action in rules:
+            points = rules[action]
+            total = add_score(user_id, points)
 
-            # Update team score
-            team = USER_TEAMS.get(user_id)
-            if team:
-                team_scores[team] = team_scores.get(team, 0) + points
-
-            try:
-                client.chat_postMessage(
-                    channel=user_id,
-                    text=f"🎮 +{points} points for :{reaction}:!\n🏆 Your total: {total}"
+            client.chat_postMessage(
+                channel=channel,
+                text=(
+                    f"📊 Logged: *{platform} | {action}*\n"
+                    f"+{points} points added\n"
+                    f"🏆 Total score: *{total}*"
                 )
-            except Exception as e:
-                print("DM error:", str(e))
-
-    # -----------------------------
-    # 3. "score" COMMAND
-    # -----------------------------
-    if event_type == "message":
-        text = event.get("text", "").strip().lower()
-        channel = event.get("channel")
-
-        if text == "score":
-
-            # Build user leaderboard
-            user_board = sorted(
-                user_scores.items(),
-                key=lambda x: x[1],
-                reverse=True
             )
-
-            # Build team leaderboard
-            team_board = sorted(
-                team_scores.items(),
-                key=lambda x: x[1],
-                reverse=True
+        else:
+            client.chat_postMessage(
+                channel=channel,
+                text=f"⚠️ Unknown action for {platform}. Try: {', '.join(rules.keys())}"
             )
-
-            msg = "*🏆 Current Scores*\n\n"
-
-            msg += "*👤 Top Users:*\n"
-            for uid, score in user_board[:5]:
-                msg += f"- <@{uid}>: {score} pts\n"
-
-            msg += "\n*👥 Team Scores:*\n"
-            for team, score in team_board:
-                msg += f"- {team}: {score} pts\n"
-
-            if not team_board:
-                msg += "- No team data yet\n"
-
-            try:
-                client.chat_postMessage(channel=channel, text=msg)
-            except Exception as e:
-                print("Score message error:", str(e))
 
     return Response("", status=200)
 
