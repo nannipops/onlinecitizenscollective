@@ -1,103 +1,100 @@
-import os
+from flask import Flask, request, Response
 from slack_sdk import WebClient
+import os
 
-SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
-CHANNEL_ID = os.environ["SLACK_CHANNEL_ID"]
+app = Flask(__name__)
 
-client = WebClient(token=SLACK_BOT_TOKEN)
+client = WebClient(token=os.environ["SLACK_BOT_TOKEN"])
 
-# -----------------------------
-# Example tracked data
-# Replace with database later
-# -----------------------------
-POSTS = [
-    {
-        "url": "https://instagram.com/p/abc123",
-        "platform": "Instagram",
-        "volunteer_engagement": {
-            "likes": 25,
-            "comments": 10,
-            "shares": 7
-        }
-    },
-    {
-        "url": "https://x.com/post/xyz456",
-        "platform": "X",
-        "volunteer_engagement": {
-            "likes": 18,
-            "comments": 4,
-            "shares": 12
-        }
-    }
-]
+# ----------------------------
+# Emoji rules
+# ----------------------------
+REACTIONS = {
+    "instagram.com": ["heart", "speech_balloon", "repeat", "outbox_tray", "clapper"],
+    "x.com": ["heart", "speech_balloon", "repeat"],
+    "twitter.com": ["heart", "speech_balloon", "repeat"],
+    "tiktok.com": ["heart", "speech_balloon", "repeat", "scissors"]
+}
 
-# -----------------------------
-# Platform totals (mock or API)
-# -----------------------------
-def get_platform_totals(post_url):
-    return {
-        "likes": 400,
-        "comments": 35,
-        "shares": 12
-    }
+# ----------------------------
+# Slack Events endpoint
+# ----------------------------
+@app.route("/slack/events", methods=["POST"])
+def slack_events():
+    data = request.get_json(silent=True)
 
-# -----------------------------
-# Build report
-# -----------------------------
-def build_report():
-    report_lines = []
+    # 🔍 DEBUG: see everything Slack sends
+    print("RAW EVENT:", data)
 
-    total = {
-        "likes": 0,
-        "comments": 0,
-        "shares": 0
-    }
+    # ----------------------------
+    # Slack URL verification handshake
+    # ----------------------------
+    if data and data.get("type") == "url_verification":
+        return Response(data["challenge"], mimetype="text/plain")
 
-    volunteer_total = {
-        "likes": 0,
-        "comments": 0,
-        "shares": 0
-    }
+    # ----------------------------
+    # Event handling
+    # ----------------------------
+    if data and "event" in data:
+        event = data["event"]
 
-    for post in POSTS:
-        totals = get_platform_totals(post["url"])
-        v = post["volunteer_engagement"]
+        print("EVENT OBJECT:", event)
 
-        # aggregate totals
-        for k in total:
-            total[k] += totals[k]
-            volunteer_total[k] += v[k]
+        # Ignore bot messages
+        if event.get("bot_id"):
+            return Response("", status=200)
 
-        line = (
-            f"*{post['platform']}*\n"
-            f"{post['url']}\n\n"
-            f"📊 Total: ❤️ {totals['likes']} | 💬 {totals['comments']} | 🔁 {totals['shares']}\n"
-            f"👥 Volunteers: ❤️ {v['likes']} | 💬 {v['comments']} | 🔁 {v['shares']}\n"
-        )
+        text = ""
 
-        report_lines.append(line)
+        # Normal message text
+        if event.get("text"):
+            text += event["text"].lower()
 
-    def pct(v, t):
-        return round((v / t) * 100, 1) if t else 0
+        # Block-based messages (RSS feeds often use this)
+        blocks = event.get("blocks", [])
+        for block in blocks:
+            if block.get("type") == "rich_text":
+                for elem in block.get("elements", []):
+                    for item in elem.get("elements", []):
+                        if item.get("type") == "text":
+                            text += item.get("text", "").lower()
 
-    footer = (
-        "\n💪 *Daily Volunteer Impact Summary*\n"
-        f"❤️ Likes: {volunteer_total['likes']} ({pct(volunteer_total['likes'], total['likes'])}%)\n"
-        f"💬 Comments: {volunteer_total['comments']} ({pct(volunteer_total['comments'], total['comments'])}%)\n"
-        f"🔁 Shares: {volunteer_total['shares']} ({pct(volunteer_total['shares'], total['shares'])}%)\n"
-    )
+        channel = event.get("channel")
+        ts = event.get("ts")
 
-    return "\n\n".join(report_lines) + footer
+        print("PARSED TEXT:", text)
 
-# -----------------------------
-# Send to Slack
-# -----------------------------
-def send_to_slack(message):
-    client.chat_postMessage(
-        channel=CHANNEL_ID,
-        text=message
-    )
+        # ----------------------------
+        # Detect platform + react
+        # ----------------------------
+        for platform, emojis in REACTIONS.items():
+            if platform in text:
+                print(f"MATCH FOUND: {platform}")
 
+                for emoji in emojis:
+                    try:
+                        client.reactions_add(
+                            channel=channel,
+                            timestamp=ts,
+                            name=emoji
+                        )
+                        print(f"Added emoji: {emoji}")
+                    except Exception as e:
+                        print("Reaction error:", e)
+
+    return Response("", status=200)
+
+
+# ----------------------------
+# Health check (Render)
+# ----------------------------
+@app.route("/")
+def home():
+    return "EmojiBot is live"
+
+
+# ----------------------------
+# Local run (Render ignores this)
+# ----------------------------
 if __name__ == "__main__":
-    report = build_report()
-    send_to_slack(report)
+    app.run(host="0.0.0.0", port=3000)
